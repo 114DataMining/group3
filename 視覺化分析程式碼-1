@@ -1,0 +1,59 @@
+# ================================
+# Step 1. 上傳 .sav 檔案
+# ================================
+from google.colab import files
+upload = files.upload()
+
+
+# ================================
+# Step 2. 安裝並載入套件
+# ================================
+# !pip install pyreadstat
+
+import pyreadstat
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+
+# ================================
+# Step 3. 讀取 .sav 檔案
+# ================================
+file_name = list(upload.keys())[0]
+df, meta = pyreadstat.read_sav(file_name)
+
+print("資料筆數與欄位形狀：", df.shape)
+display(df.head())
+
+
+# ================================
+# Step 4. 選取原始數值型欄位（適合相關係數）
+# ================================
+numeric_cols = [
+    'age',
+    'fnlwgt',
+    'education.num',
+    'capital.gain',
+    'capital.loss',
+    'hours.per.week',
+    'income_bin'
+]
+
+print("可用於相關係數的欄位：")
+print(numeric_cols)
+
+
+# ================================
+# Step 5. 計算相關矩陣
+# ================================
+corr = df[numeric_cols].corr()
+display(corr)
+
+
+# ================================
+# Step 6. 繪製熱力圖
+# ================================
+plt.figure(figsize=(12, 10))
+sns.heatmap(corr, annot=True, cmap='coolwarm', fmt='.2f')
+plt.title('Correlation Heatmap (Numerical Variables)')
+plt.show()
