@@ -1,0 +1,89 @@
+# ================================
+# 0. 上傳檔案
+# ================================
+from google.colab import files
+uploaded = files.upload()
+
+
+# ================================
+# 1. 載入套件
+# ================================
+import pandas as pd
+import plotly.express as px
+import os
+
+# !pip install pyreadstat   # 安裝讀取 SPSS .sav 檔案的套件（Colab 需要）
+import pyreadstat
+
+
+# ================================
+# 2. 自動抓剛上傳的 SAV 檔名
+# ================================
+sav_files = [f for f in os.listdir() if f.endswith(".sav")]
+
+if len(sav_files) == 0:
+    raise FileNotFoundError("目前資料夾沒有任何 SAV 檔案")
+elif len(sav_files) > 1:
+    print("找到多個 SAV，使用第一個：", sav_files[0])
+
+file_name = sav_files[0]
+print("使用檔案：", file_name)
+
+
+# ================================
+# 3. 讀取 SPSS（.sav）資料
+# ================================
+df, meta = pyreadstat.read_sav(file_name)
+
+
+# ================================
+# 4. 檢視資料
+# ================================
+df.head()
+
+
+# ================================
+# 5. 確認 income_bin 已存在（1 = 高收入，0 = 低收入）
+# （不需重新建立，直接使用）
+# ================================
+
+
+# ================================
+# 6. 將每週工時分組（避免圖太擠 → 合併為一根 bar）
+# ================================
+df['hours_group'] = pd.cut(
+    df['hours.per.week'],
+    bins=[0, 40, 60, 100],
+    labels=['≤40 hrs', '41–60 hrs', '>60 hrs']
+)
+
+
+# ================================
+# 7. 分組計算高收入比例
+# ================================
+summary = (
+    df
+    .groupby(['occ_cat', 'hours_group'], dropna=False)['income_bin']
+    .mean()
+    .reset_index()
+)
+
+
+# ================================
+# 8. 畫群組長條圖
+# ================================
+fig = px.bar(
+    summary,
+    x='occ_cat',
+    y='income_bin',
+    color='hours_group',
+    barmode='group',
+    labels={
+        'occ_cat': 'Occupation Category',
+        'income_bin': 'Proportion of High Income (>50K)',
+        'hours_group': 'Weekly Working Hours'
+    },
+    title='Proportion of High Income by Occupation and Weekly Working Hours'
+)
+
+fig.show()
