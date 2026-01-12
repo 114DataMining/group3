@@ -1,0 +1,183 @@
+# ===============================
+# 1️⃣ 套件
+# ===============================
+!pip install pyreadstat
+import pandas as pd
+import numpy as np
+import pyreadstat
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_curve, auc
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+
+train_df, _ = pyreadstat.read_sav("train_balanced.sav")
+test_df, _  = pyreadstat.read_sav("test.sav")
+
+feature_cols = [
+    "work_cat","edu_cat","mar_cat","occ_cat","rel_cat",
+    "race_cat","sex_cat","nat_cat","edun_cat","age_cat",
+    "capital.gain","capital.loss","hours.per.week"
+]
+
+X_train = train_df[feature_cols]
+y_train = train_df["income_bin"]
+
+X_test  = test_df[feature_cols]
+y_test  = test_df["income_bin"]
+
+# ------------------------------
+# 2️⃣ 建立羅吉斯回歸模型
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+log_model = LogisticRegression(
+    solver="saga",
+    max_iter=2000,
+    tol=1e-3,
+    n_jobs=-1
+)
+
+
+# ------------------------------
+# 3️⃣ 五折交叉驗證 (訓練集)
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+cv_scores = cross_val_score(log_model, X_train, y_train, cv=cv, scoring='accuracy')
+from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
+
+fold_results = []
+
+for fold, (train_idx, val_idx) in enumerate(cv.split(X_train, y_train), 1):
+    print(f"\n================ Fold {fold} ================")
+
+    X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
+    y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+
+    # 訓練
+    log_model.fit(X_tr, y_tr)
+
+    # 預測
+    y_tr_pred  = log_model.predict(X_tr)
+    y_val_pred = log_model.predict(X_val)
+    y_val_prob = log_model.predict_proba(X_val)[:,1]
+
+    # Accuracy
+    acc_tr  = accuracy_score(y_tr, y_tr_pred)
+    acc_val = accuracy_score(y_val, y_val_pred)
+
+    print(f"Train Accuracy: {acc_tr:.4f}")
+    print(f"Val   Accuracy: {acc_val:.4f}")
+
+    # 分類報告
+    print("\n[Train Classification Report]")
+    print(classification_report(y_tr, y_tr_pred))
+
+    print("[Validation Classification Report]")
+    print(classification_report(y_val, y_val_pred))
+
+    # 混淆矩陣
+    fig, ax = plt.subplots(1,2, figsize=(10,4))
+    sns.heatmap(confusion_matrix(y_tr, y_tr_pred),
+                annot=True, fmt='d', cmap='Blues', ax=ax[0])
+    ax[0].set_title(f'Fold {fold} Train CM')
+
+    sns.heatmap(confusion_matrix(y_val, y_val_pred),
+                annot=True, fmt='d', cmap='Greens', ax=ax[1])
+    ax[1].set_title(f'Fold {fold} Val CM')
+    plt.show()
+
+    # ROC + AUC
+    fpr, tpr, _ = roc_curve(y_val, y_val_prob)
+    roc_auc = auc(fpr, tpr)
+
+    plt.figure(figsize=(5,4))
+    plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.3f}')
+    plt.plot([0,1],[0,1],'--', color='gray')
+    plt.title(f'Fold {fold} Validation ROC')
+    plt.xlabel('FPR')
+    plt.ylabel('TPR')
+    plt.legend()
+    plt.show()
+
+    fold_results.append(acc_val)
+
+print("Train 5-Fold CV Accuracy:\n", cv_scores)
+print("Train Average Accuracy:", cv_scores.mean())
+
+# ------------------------------
+# 4️⃣ 訓練完整模型
+log_model.fit(X_train, y_train)
+
+# ------------------------------
+# 5️⃣ 訓練集預測
+y_train_pred = log_model.predict(X_train)
+y_train_prob = log_model.predict_proba(X_train)[:, 1]
+
+# ------------------------------
+# 6️⃣ 測試集預測
+y_test_pred = log_model.predict(X_test)
+y_test_prob = log_model.predict_proba(X_test)[:, 1]
+
+# ------------------------------
+# 7️⃣ Accuracy
+train_acc = accuracy_score(y_train, y_train_pred)
+test_acc  = accuracy_score(y_test, y_test_pred)
+print(f"\nTrain Accuracy: {train_acc:.3f}")
+print(f"Test Accuracy: {test_acc:.3f}")
+
+# ------------------------------
+# 8️⃣ 分類報告
+print("\nTrain classsifiction report:\n", classification_report(y_train, y_train_pred))
+print("\nTest classsifiction report:\n", classification_report(y_test, y_test_pred))
+
+# ------------------------------
+# 9️⃣ 混淆矩陣圖
+fig, axes = plt.subplots(1,2, figsize=(12,5))
+sns.heatmap(confusion_matrix(y_train, y_train_pred), annot=True, fmt='d', ax=axes[0], cmap='Blues')
+axes[0].set_title('Train confusion matrix')
+axes[0].set_xlabel('Predicted value')
+axes[0].set_ylabel('Actual value')
+
+sns.heatmap(confusion_matrix(y_test, y_test_pred), annot=True, fmt='d', ax=axes[1], cmap='Greens')
+axes[1].set_title('Test confusion matrix')
+axes[1].set_xlabel('Predicted value')
+axes[1].set_ylabel('Actual value')
+plt.show()
+
+# ------------------------------
+# 10️⃣ ROC 曲線 & AUC
+fig, axes = plt.subplots(1,2, figsize=(12,5))
+
+# 訓練集
+fpr_train, tpr_train, _ = roc_curve(y_train, y_train_prob)
+roc_auc_train = auc(fpr_train, tpr_train)
+axes[0].plot(fpr_train, tpr_train, color='blue', lw=2, label=f'AUC = {roc_auc_train:.3f}')
+axes[0].plot([0,1], [0,1], color='gray', lw=1, linestyle='--')
+axes[0].set_title('Train ROC')
+axes[0].set_xlabel('False Positive Rate')
+axes[0].set_ylabel('True Positive Rate')
+axes[0].legend(loc='lower right')
+
+# 測試集
+fpr_test, tpr_test, _ = roc_curve(y_test, y_test_prob)
+roc_auc_test = auc(fpr_test, tpr_test)
+axes[1].plot(fpr_test, tpr_test, color='green', lw=2, label=f'AUC = {roc_auc_test:.3f}')
+axes[1].plot([0,1], [0,1], color='gray', lw=1, linestyle='--')
+axes[1].set_title('Test ROC')
+axes[1].set_xlabel('False Positive Rate')
+axes[1].set_ylabel('True Positive Rate')
+axes[1].legend(loc='lower right')
+
+plt.show()
+
+# ------------------------------
+# 11️⃣ 特徵重要性 & 勝算比 (Odds Ratio)
+coef_df = pd.DataFrame({
+    'feature': feature_cols,
+    'coefficient': log_model.coef_[0]
+})
+coef_df['odds_ratio'] = np.exp(coef_df['coefficient'])
+coef_df = coef_df.sort_values(by='coefficient', key=abs, ascending=False)
+print("\n特徵重要性與勝算比:\n", coef_df)
