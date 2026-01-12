@@ -1,0 +1,626 @@
+# ================================
+# 0. 安裝套件（Colab 才需要）
+# ================================
+# !pip install pyreadstat seaborn
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.metrics import accuracy_score
+
+
+# ================================
+# 1. 匯入套件
+# ================================
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import (
+    confusion_matrix,
+    accuracy_score,
+    classification_report,
+    roc_curve,
+    auc
+)
+
+
+# ================================
+# 2. 載入訓練 / 測試資料
+# ================================
+train_path = '/content/train_balanced.sav'
+test_path  = '/content/test.sav'
+
+try:
+    train_data = pd.read_spss(train_path)
+    test_data  = pd.read_spss(test_path)
+    print("訓練與測試資料載入成功！")
+except Exception as e:
+    print(f"讀取失敗：{e}")
+    exit()
+
+# ================================
+# 3. 指定目標與特徵
+# ================================
+TARGET_COLUMN = 'income_bin'
+
+FEATURE_COLUMNS = [
+    'mar_cat',
+    'edu_cat',
+    'hours.per.week',
+    'capital.gain',
+    'age_cat',
+    'occ_cat'
+]
+
+
+# ================================
+# 4. 檢查欄位是否存在
+# ================================
+missing_cols = [
+    c for c in FEATURE_COLUMNS + [TARGET_COLUMN]
+    if c not in train_data.columns
+]
+
+if missing_cols:
+    print("找不到以下欄位：", missing_cols)
+    print("目前資料欄位：", train_data.columns.tolist())
+    exit()
+
+
+# ================================
+# 5. 切分 X / y（已分好，不再 split）
+# ================================
+X_train = train_data.drop(TARGET_COLUMN, axis=1)
+y_train = train_data[TARGET_COLUMN]
+
+X_test  = test_data.drop(TARGET_COLUMN, axis=1)
+y_test  = test_data[TARGET_COLUMN]
+
+
+# ================================
+# 6. 目標變數編碼
+# ================================
+le = LabelEncoder()
+y_train = le.fit_transform(y_train)
+y_test  = le.transform(y_test)
+
+# ================================
+# 7. 缺失值處理（數值）
+# ================================
+for col in X_train.columns:
+    if X_train[col].dtype in [np.float64, np.int64]:
+        median_val = X_train[col].median()
+        X_train[col] = X_train[col].fillna(median_val)
+        X_test[col]  = X_test[col].fillna(median_val)
+
+
+# ================================
+# 8. 類別變數 One-hot 編碼
+# ================================
+cat_cols = X_train.select_dtypes(include=['object', 'category']).columns
+
+X_train = pd.get_dummies(X_train, columns=cat_cols, drop_first=True)
+X_test  = pd.get_dummies(X_test,  columns=cat_cols, drop_first=True)
+
+# 對齊欄位
+X_train, X_test = X_train.align(
+    X_test,
+    join='left',
+    axis=1,
+    fill_value=0
+)
+
+print("資料前處理完成")
+
+
+# ================================
+# 9. 訓練 Random Forest（保守設定）
+# ================================
+model = RandomForestClassifier(
+    n_estimators=100,
+    max_depth=1,
+    min_samples_leaf=20,
+    random_state=42,
+    n_jobs=-1
+)
+
+print("開始訓練模型...")
+model.fit(X_train, y_train)
+
+# ================================
+# 10. 五折交叉驗證
+# ================================
+from imblearn.over_sampling import SMOTE
+
+smote = SMOTE(random_state=42)
+X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
+
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.metrics import accuracy_score, classification_report
+import numpy as np
+import pandas as pd
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# 五折交叉驗證 accuracy
+cv_scores = cross_val_score(
+    model,
+    X_train_res,
+    y_train_res,
+    cv=cv,
+    scoring='accuracy'
+)
+
+
+# ================================
+# 只累積「正樣本」報告
+# ================================
+report_accum = []
+
+for train_idx, val_idx in cv.split(X_train_res, y_train_res):
+    X_tr  = X_train_res.iloc[train_idx]
+    X_val = X_train_res.iloc[val_idx]
+    y_tr  = y_train_res[train_idx]
+    y_val = y_train_res[val_idx]
+
+    model.fit(X_tr, y_tr)
+    y_val_pred = model.predict(X_val)
+
+    report = classification_report(
+        y_val,
+        y_val_pred,
+        output_dict=True,
+        zero_division=0
+    )
+
+    # 只存正樣本（label = 1）
+    report_accum.append(report['1'])
+
+# ================================
+# 平均 precision / recall / f1（正樣本）
+# ================================
+avg_report = {}
+std_report = {}
+
+for metric in report_accum[0].keys():
+    values = [r[metric] for r in report_accum]
+    avg_report[metric] = np.mean(values)
+    std_report[metric] = np.std(values)
+
+
+# ================================
+# 最終模型
+# ================================
+model.fit(X_train_res, y_train_res)
+
+y_train_pred = model.predict(X_train_res)
+y_test_pred  = model.predict(X_test)
+
+print("\n訓練集準確率：", accuracy_score(y_train_res, y_train_pred))
+print("測試集準確率：", accuracy_score(y_test, y_test_pred))
+print("\n")
+
+std_acc  = np.std(cv_scores)
+mean_acc = np.mean(cv_scores)
+
+acc_deviation = cv_scores - mean_acc
+
+print("五折交叉驗證準確率：", cv_scores)
+print("平均準確率：", mean_acc)
+
+print("\n五折交叉驗證平均分類報告：")
+print(pd.DataFrame(avg_report, index=['positive']).T)
+
+print("\n五折偏差（每折-平均）：", acc_deviation)
+print("五折標準差：", std_acc)
+
+print("\n五次交叉驗證標準差分類報告：")
+print(pd.DataFrame(std_report, index=['positive']).T)
+
+print("\n")
+print(f"平均 ± 標準差： {mean_acc} ± {std_acc}")
+
+# ================================
+# 11. 混淆矩陣比較－五折交叉驗證（含平均）
+# ================================
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import confusion_matrix, accuracy_score
+
+
+# ================================
+# 合併原本的 train / test 資料
+# ================================
+X_combined = np.vstack((X_train, X_test))
+y_combined = np.hstack((y_train, y_test))
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+
+# ================================
+# 用來儲存每一折的結果
+# ================================
+cm_train_list = []
+cm_test_list  = []
+acc_train_list = []
+acc_test_list  = []
+
+
+# ================================
+# 建立 6 × 2 子圖（最後一列放平均）
+# ================================
+fig, axes = plt.subplots(6, 2, figsize=(16, 36))
+
+
+# ================================
+# 五折交叉驗證
+# ================================
+for i, (train_idx, test_idx) in enumerate(cv.split(X_combined, y_combined)):
+
+    # === 切分資料 ===
+    X_train_fold = X_combined[train_idx]
+    X_test_fold  = X_combined[test_idx]
+    y_train_fold = y_combined[train_idx]
+    y_test_fold  = y_combined[test_idx]
+
+    # === 訓練模型 ===
+    model.fit(X_train_fold, y_train_fold)
+
+    # === 預測 ===
+    y_train_pred = model.predict(X_train_fold)
+    y_test_pred  = model.predict(X_test_fold)
+
+    # === 混淆矩陣 ===
+    cm_train = confusion_matrix(y_train_fold, y_train_pred)
+    cm_test  = confusion_matrix(y_test_fold, y_test_pred)
+
+    cm_train_list.append(cm_train)
+    cm_test_list.append(cm_test)
+
+    # === 準確率 ===
+    acc_train = accuracy_score(y_train_fold, y_train_pred)
+    acc_test  = accuracy_score(y_test_fold, y_test_pred)
+
+    acc_train_list.append(acc_train)
+    acc_test_list.append(acc_test)
+
+    # === 畫圖 ===
+    sns.heatmap(cm_train, annot=True, fmt='d', cmap='Blues', ax=axes[i, 0])
+    axes[i, 0].set_title(f'Fold {i+1} - Train\nAcc={acc_train:.3f}')
+    axes[i, 0].set_xlabel('Predicted')
+    axes[i, 0].set_ylabel('Actual')
+
+    sns.heatmap(cm_test, annot=True, fmt='d', cmap='Oranges', ax=axes[i, 1])
+    axes[i, 1].set_title(f'Fold {i+1} - Test\nAcc={acc_test:.3f}')
+    axes[i, 1].set_xlabel('Predicted')
+    axes[i, 1].set_ylabel('Actual')
+
+
+# ================================
+# 計算平均混淆矩陣
+# ================================
+avg_cm_train = np.mean(cm_train_list, axis=0)
+avg_cm_test  = np.mean(cm_test_list, axis=0)
+
+avg_acc_train = np.mean(acc_train_list)
+avg_acc_test  = np.mean(acc_test_list)
+
+
+# ================================
+# 畫平均混淆矩陣
+# ================================
+sns.heatmap(avg_cm_train, annot=True, fmt='.1f', cmap='Blues', ax=axes[5, 0])
+axes[5, 0].set_title(f'Average - Train\nAcc={avg_acc_train:.3f}')
+axes[5, 0].set_xlabel('Predicted')
+axes[5, 0].set_ylabel('Actual')
+
+sns.heatmap(avg_cm_test, annot=True, fmt='.1f', cmap='Oranges', ax=axes[5, 1])
+axes[5, 1].set_title(f'Average - Test\nAcc={avg_acc_test:.3f}')
+axes[5, 1].set_xlabel('Predicted')
+axes[5, 1].set_ylabel('Actual')
+
+plt.tight_layout()
+plt.show()
+
+# ================================
+# Train Confusion Matrix
+# ================================
+cm_train = confusion_matrix(y_train_fold, y_train_pred)
+acc_train = accuracy_score(y_train_fold, y_train_pred)
+
+cm_train_list.append(cm_train)
+acc_train_list.append(acc_train)
+
+sns.heatmap(
+    cm_train,
+    annot=True,
+    fmt='d',
+    cmap='Oranges',
+    ax=axes[i, 0]
+)
+axes[i, 0].set_title(f'Fold {i+1} - Train\nAccuracy={acc_train:.4f}')
+axes[i, 0].set_xlabel('Predicted')
+axes[i, 0].set_ylabel('True')
+
+
+# ================================
+# Test Confusion Matrix
+# ================================
+cm_test = confusion_matrix(y_test_fold, y_test_pred)
+acc_test = accuracy_score(y_test_fold, y_test_pred)
+
+cm_test_list.append(cm_test)
+acc_test_list.append(acc_test)
+
+sns.heatmap(
+    cm_test,
+    annot=True,
+    fmt='d',
+    cmap='Blues',
+    ax=axes[i, 1]
+)
+axes[i, 1].set_title(f'Fold {i+1} - Test\nAccuracy={acc_test:.4f}')
+axes[i, 1].set_xlabel('Predicted')
+axes[i, 1].set_ylabel('True')
+
+# ================================
+# 計算平均混淆矩陣與平均準確率
+# ================================
+mean_cm_train = np.mean(cm_train_list, axis=0)
+mean_cm_test  = np.mean(cm_test_list, axis=0)
+
+mean_acc_train = np.mean(acc_train_list)
+mean_acc_test  = np.mean(acc_test_list)
+
+
+# ================================
+# 平均 Train Confusion Matrix
+# ================================
+sns.heatmap(
+    mean_cm_train,
+    annot=True,
+    fmt='.2f',
+    cmap='Oranges',
+    ax=axes[5, 0]
+)
+axes[5, 0].set_title(
+    f'Mean Train (5-Fold CV)\nAccuracy={mean_acc_train:.4f}'
+)
+axes[5, 0].set_xlabel('Predicted')
+axes[5, 0].set_ylabel('True')
+
+
+# ================================
+# 平均 Test Confusion Matrix
+# ================================
+sns.heatmap(
+    mean_cm_test,
+    annot=True,
+    fmt='.2f',
+    cmap='Blues',
+    ax=axes[5, 1]
+)
+axes[5, 1].set_title(
+    f'Mean Test (5-Fold CV)\nAccuracy={mean_acc_test:.4f}'
+)
+axes[5, 1].set_xlabel('Predicted')
+axes[5, 1].set_ylabel('True')
+
+
+plt.tight_layout()
+plt.show()
+
+# ================================
+# 12. ROC Curve（五折交叉驗證）
+# ================================
+from sklearn.metrics import roc_curve, auc
+import numpy as np
+import matplotlib.pyplot as plt
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+mean_fpr = np.linspace(0, 1, 100)
+tprs = []
+aucs = []
+
+plt.figure(figsize=(8, 6))
+
+for i, (train_idx, val_idx) in enumerate(cv.split(X_train_res, y_train_res), 1):
+    X_tr  = X_train_res.iloc[train_idx]
+    X_val = X_train_res.iloc[val_idx]
+    y_tr  = y_train_res[train_idx]
+    y_val = y_train_res[val_idx]
+
+    model.fit(X_tr, y_tr)
+    y_val_prob = model.predict_proba(X_val)[:, 1]
+
+    fpr, tpr, _ = roc_curve(y_val, y_val_prob)
+    roc_auc = auc(fpr, tpr)
+
+    # 畫每一折 ROC
+    plt.plot(
+        fpr, tpr,
+        lw=1, alpha=0.4,
+        label=f'Fold {i} ROC (AUC = {roc_auc:.4f})'
+    )
+
+    # 插值用來算平均 ROC
+    interp_tpr = np.interp(mean_fpr, fpr, tpr)
+    interp_tpr[0] = 0.0
+    tprs.append(interp_tpr)
+    aucs.append(roc_auc)
+
+
+# ================================
+# 平均 ROC + 標準差
+# ================================
+mean_tpr = np.mean(tprs, axis=0)
+mean_tpr[-1] = 1.0
+mean_auc = np.mean(aucs)
+std_auc = np.std(aucs)
+
+std_tpr = np.std(tprs, axis=0)
+
+plt.plot(
+    mean_fpr,
+    mean_tpr,
+    color='b',
+    label=f'Mean ROC (AUC = {mean_auc:.4f} ± {std_auc:.4f})',
+    lw=2
+)
+
+plt.fill_between(
+    mean_fpr,
+    mean_tpr - std_tpr,
+    mean_tpr + std_tpr,
+    color='grey',
+    alpha=0.2,
+    label='±1 std'
+)
+
+# Random guess
+plt.plot([0, 1], [0, 1], linestyle='--', color='black', label='Random Guess')
+
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve (5-Fold Cross-Validation)')
+plt.legend(loc='lower right')
+plt.grid()
+plt.show()
+
+
+# ================================
+# 數值輸出（老師看數據用）
+# ================================
+print("五折 AUC：", aucs)
+print("平均 AUC：", mean_auc)
+print("五次標準差：", std_auc)
+print(f"平均 ± 標準差： {mean_auc:.4f} ± {std_auc:.4f}")
+
+# ================================
+# 13. ROC Curve（五折交叉驗證：Train / Test）
+# ================================
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import roc_curve, auc
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ===== 5-fold CV =====
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+mean_fpr = np.linspace(0, 1, 100)
+
+tprs_train, tprs_test = [], []
+aucs_train, aucs_test = [], []
+
+for i, (train_idx, test_idx) in enumerate(cv.split(X_train_res, y_train_res), 1):
+
+    X_tr = X_train_res.iloc[train_idx]
+    X_te = X_train_res.iloc[test_idx]
+    y_tr = y_train_res[train_idx]
+    y_te = y_train_res[test_idx]
+
+    # ===== Train model =====
+    model.fit(X_tr, y_tr)
+
+    # ===== Train ROC =====
+    y_tr_prob = model.predict_proba(X_tr)[:, 1]
+    fpr_tr, tpr_tr, _ = roc_curve(y_tr, y_tr_prob)
+    auc_tr = auc(fpr_tr, tpr_tr)
+
+    # ===== Test ROC =====
+    y_te_prob = model.predict_proba(X_te)[:, 1]
+    fpr_te, tpr_te, _ = roc_curve(y_te, y_te_prob)
+    auc_te = auc(fpr_te, tpr_te)
+
+    # ===== 每個 fold 畫一張圖 =====
+    plt.figure(figsize=(6, 5))
+    plt.plot(fpr_tr, tpr_tr, lw=2, label=f'Train ROC (AUC = {auc_tr:.4f})')
+    plt.plot(fpr_te, tpr_te, lw=2, label=f'Test ROC (AUC = {auc_te:.4f})')
+    plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
+
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(f'ROC Curve - Fold {i}')
+    plt.legend(loc='lower right')
+    plt.grid()
+    plt.show()
+
+    # ===== 儲存數值 =====
+    tprs_train.append(np.interp(mean_fpr, fpr_tr, tpr_tr))
+    tprs_test.append(np.interp(mean_fpr, fpr_te, tpr_te))
+    aucs_train.append(auc_tr)
+    aucs_test.append(auc_te)
+
+# ====== 存起來算平均 ======
+tprs_train.append(np.interp(mean_fpr, fpr_tr, tpr_tr))
+tprs_test.append(np.interp(mean_fpr, fpr_te, tpr_te))
+aucs_train.append(auc_tr)
+aucs_test.append(auc_te)
+
+
+# ====== 平均 ROC ======
+mean_tpr_train = np.mean(tprs_train, axis=0)
+mean_tpr_test  = np.mean(tprs_test, axis=0)
+
+mean_tpr_train[-1] = 1.0
+mean_tpr_test[-1]  = 1.0
+
+mean_auc_train = np.mean(aucs_train)
+std_auc_train  = np.std(aucs_train)
+
+mean_auc_test = np.mean(aucs_test)
+std_auc_test  = np.std(aucs_test)
+
+
+plt.figure(figsize=(7, 6))
+
+plt.plot(
+    mean_fpr,
+    mean_tpr_train,
+    lw=2,
+    label=f'Train Mean ROC (AUC = {mean_auc_train:.4f} ± {std_auc_train:.4f})'
+)
+
+plt.plot(
+    mean_fpr,
+    mean_tpr_test,
+    lw=2,
+    label=f'Test Mean ROC (AUC = {mean_auc_test:.4f} ± {std_auc_test:.4f})'
+)
+
+plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
+
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Mean ROC Curve (5-Fold Cross-Validation)')
+plt.legend(loc='lower right')
+plt.grid()
+plt.show()
+
+# ================================
+# 14. 成效報告
+# ================================
+
+# 重新計算完整的訓練集和測試集預測
+# model 是在 step 10 的最後一折交叉驗證中訓練的結果
+y_train_pred = model.predict(X_train)
+y_test_pred  = model.predict(X_test)
+
+# 重新計算完整的訓練集和測試集準確率
+acc_train = accuracy_score(y_train, y_train_pred)
+acc_test  = accuracy_score(y_test, y_test_pred)
+
+print(f"Train Accuracy: {acc_train:.4f}")
+print(f"Test  Accuracy: {acc_test:.4f}")
+
+print("\n--- Train Classification Report ---")
+print(classification_report(y_train, y_train_pred))
+
+print("\n--- Test Classification Report ---")
+print(classification_report(y_test, y_test_pred))
