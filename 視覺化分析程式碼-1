@@ -1,0 +1,82 @@
+# ================================
+# 0. 上傳檔案
+# ================================
+from google.colab import files
+uploaded = files.upload()
+
+
+# ================================
+# 1. 載入套件
+# ================================
+import pandas as pd
+import plotly.express as px
+import os
+
+# !pip install pyreadstat   # 安裝讀取 SPSS .sav 檔案的套件（Colab 需要）
+import pyreadstat
+
+
+# ================================
+# 2. 自動抓剛上傳的 SAV 檔名
+# ================================
+sav_files = [f for f in os.listdir() if f.endswith(".sav")]
+
+if len(sav_files) == 0:
+    raise FileNotFoundError("目前資料夾沒有任何 SAV 檔案")
+elif len(sav_files) > 1:
+    print("找到多個 SAV，使用第一個：", sav_files[0])
+
+file_name = sav_files[0]
+print("使用檔案：", file_name)
+
+
+# ================================
+# 3. 讀取 SPSS（.sav）檔案
+# ================================
+df, meta = pyreadstat.read_sav(file_name)
+
+
+# ================================
+# 4. 檢視資料
+# ================================
+df.head()
+
+
+# ================================
+# 5. 分組計算高收入比例
+# ================================
+summary = (
+    df
+    .groupby(['edu_cat', 'sex_cat'], dropna=False)['income_bin']
+    .mean()
+    .reset_index()
+)
+
+
+# ================================
+# 6. 性別轉文字（SPSS 常見 1/2 編碼）
+# ================================
+summary['sex'] = summary['sex_cat'].map({
+    1: 'Male',
+    2: 'Female'
+})
+
+
+# ================================
+# 7. 畫群組長條圖
+# ================================
+fig = px.bar(
+    summary,
+    x='edu_cat',
+    y='income_bin',
+    color='sex',
+    barmode='group',
+    labels={
+        'edu_cat': 'Education Level',
+        'income_bin': 'Proportion of High Income (>50K)'
+    },
+    title='Proportion of High Income by Education Level and Sex'
+)
+
+fig.show()
+
