@@ -1,0 +1,92 @@
+# ===============================
+# 1️⃣ 套件
+# ===============================
+# !pip install pyreadstat
+
+import pandas as pd
+import pyreadstat
+from sklearn.model_selection import train_test_split
+from imblearn.over_sampling import SMOTE
+from imblearn.under_sampling import RandomUnderSampler
+from imblearn.pipeline import Pipeline
+
+
+# ===============================
+# 2️⃣ 讀取原始資料
+# ===============================
+df, meta = pyreadstat.read_sav("codingok.sav")
+df.columns = df.columns.str.strip()  # 去掉欄位空白
+
+print("========== 原始資料總覽 ==========")
+print("原始資料量:", df.shape)
+print("原始收入分布:\n", df["income_bin"].value_counts())
+
+
+# ===============================
+# 3️⃣ 指定特徵與目標
+# ===============================
+feature_cols = [
+    "work_cat", "edu_cat", "mar_cat", "occ_cat", "rel_cat",
+    "race_cat", "sex_cat", "nat_cat", "edun_cat", "age_cat",
+    "capital.gain", "capital.loss", "hours.per.week"
+]
+
+X = df[feature_cols]
+y = df["income_bin"].fillna(df["income_bin"].mode()[0])  # 填補缺失值
+
+
+# ===============================
+# 4️⃣ 80/20 切分
+# ===============================
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y
+)
+
+print("\n訓練集大小:", X_train.shape)
+print("訓練集收入分布:\n", y_train.value_counts())
+print("測試集大小:", X_test.shape)
+print("測試集收入分布:\n", y_test.value_counts())
+
+
+# ===============================
+# 5️⃣ 訓練集平衡：高收入 SMOTE、低收入下採樣
+# ===============================
+num_total_train = X_train.shape[0]          # 23081
+target_per_class = num_total_train // 2     # 11540
+
+smote = SMOTE(
+    sampling_strategy={1: target_per_class},  # 高收入補到 11540
+    random_state=42
+)
+under = RandomUnderSampler(
+    sampling_strategy={0: target_per_class},  # 低收入下採樣到 11540
+    random_state=42
+)
+
+pipeline = Pipeline([("smote", smote), ("under", under)])
+X_train_bal, y_train_bal = pipeline.fit_resample(X_train, y_train)
+
+print("\n========== 平衡後訓練集總覽 ==========")
+print("平衡後訓練集大小:", X_train_bal.shape)
+print("平衡後訓練集分布:\n", y_train_bal.value_counts())
+
+
+# ===============================
+# 6️⃣ 輸出 train/test SAV 檔
+# ===============================
+train_data = pd.concat(
+    [X_train_bal.reset_index(drop=True), y_train_bal.reset_index(drop=True)],
+    axis=1
+)
+test_data = pd.concat(
+    [X_test.reset_index(drop=True), y_test.reset_index(drop=True)],
+    axis=1
+)
+
+pyreadstat.write_sav(train_data, "train_balanced.sav")
+pyreadstat.write_sav(test_data, "test.sav")
+
+print("\n✅ SAV 檔已產生：train_balanced.sav & test.sav")
