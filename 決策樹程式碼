@@ -1,0 +1,375 @@
+# ===============================
+# 1️⃣ 套件
+# ===============================
+!pip install -q pyreadstat shap
+import pandas as pd
+import numpy as np
+import pyreadstat
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.tree import DecisionTreeClassifier, plot_tree
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import (
+    confusion_matrix, accuracy_score,
+    roc_curve, roc_auc_score,
+    classification_report
+)
+
+# ===============================
+# 2️⃣ 讀取資料
+# ===============================
+train_df, _ = pyreadstat.read_sav("train_balanced.sav")
+test_df, _  = pyreadstat.read_sav("test.sav")
+
+feature_cols = [
+    "work_cat","edu_cat","mar_cat","occ_cat","rel_cat",
+    "race_cat","sex_cat","nat_cat","edun_cat","age_cat",
+    "capital.gain","capital.loss","hours.per.week"
+]
+
+X_train = train_df[feature_cols]
+y_train = train_df["income_bin"]
+
+X_test  = test_df[feature_cols]
+y_test  = test_df["income_bin"]
+
+# ===============================
+# 3️⃣ 模型 & CV
+# ===============================
+model = DecisionTreeClassifier(
+    criterion="gini",
+    max_depth=4,
+    min_samples_leaf=20,
+    random_state=42
+)
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# ===============================
+# 4️⃣ 儲存容器（五折）
+# ===============================
+cm_train_list, cm_test_list = [], []
+acc_train_list, acc_test_list = [], []
+
+roc_train_list, roc_test_list = [], []
+auc_train_list, auc_test_list = [], []
+
+importance_list = []
+report_list_train, report_list_test = [], []
+
+# ===============================
+# 5️⃣ 五折交叉驗證（每折：Train/Test CM + Train/Test ROC）
+# ===============================
+for fold, (train_idx, val_idx) in enumerate(cv.split(X_train, y_train), start=1):
+    X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
+    y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+
+    model.fit(X_tr, y_tr)
+
+    # ===== 預測：Train / Test
+    y_tr_pred   = model.predict(X_tr)
+    y_test_pred = model.predict(X_test)
+
+    # ===== Train/Test accuracy（存起來）
+    acc_train = accuracy_score(y_tr, y_tr_pred)
+    acc_test  = accuracy_score(y_test, y_test_pred)
+    acc_train_list.append(acc_train)
+    acc_test_list.append(acc_test)
+
+    # ===============================
+    # (A) Confusion Matrix（每折：Train + Test 同一張）
+    # ===============================
+    cm_tr = confusion_matrix(y_tr, y_tr_pred)
+    cm_te = confusion_matrix(y_test, y_test_pred)
+
+    cm_train_list.append(cm_tr)
+    cm_test_list.append(cm_te)
+
+    plt.figure(figsize=(10,4))
+
+    plt.subplot(1,2,1)
+    sns.heatmap(cm_tr, annot=True, fmt="d", cmap="Oranges")
+    plt.title(f"Fold {fold} Train CM")
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+
+    plt.subplot(1,2,2)
+    sns.heatmap(cm_te, annot=True, fmt="d", cmap="Blues")
+    plt.title(f"Fold {fold} Test CM")
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+
+    plt.tight_layout()
+    plt.show()
+
+    # ===============================
+    # (B) ROC（每折：Train + Test 同一張）
+    # ===============================
+    y_tr_prob   = model.predict_proba(X_tr)[:, 1]
+    y_test_prob = model.predict_proba(X_test)[:, 1]
+
+    fpr_tr, tpr_tr, _ = roc_curve(y_tr, y_tr_prob)
+    fpr_te, tpr_te, _ = roc_curve(y_test, y_test_prob)
+
+    roc_train_list.append((fpr_tr, tpr_tr))
+    roc_test_list.append((fpr_te, tpr_te))
+
+    auc_tr = roc_auc_score(y_tr, y_tr_prob)
+    auc_te = roc_auc_score(y_test, y_test_prob)
+    auc_train_list.append(auc_tr)
+    auc_test_list.append(auc_te)
+
+    plt.figure(figsize=(7,6))
+    plt.plot(fpr_tr, tpr_tr, label=f"Train AUC={auc_tr:.3f}")
+    plt.plot(fpr_te, tpr_te, label=f"Test  AUC={auc_te:.3f}")
+    plt.plot([0,1],[0,1],'--',color='gray')
+    plt.title(f"Fold {fold} ROC (Train vs Test)")
+    plt.xlabel("FPR")
+    plt.ylabel("TPR")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # ===== 特徵重要性（折內存起來做平均±std）
+    importance_list.append(model.feature_importances_)
+
+    # ===== 分類報告（Train 用 X_tr，Test 用同一份 X_test）
+    report_list_train.append(classification_report(y_tr, y_tr_pred, output_dict=True))
+    report_list_test.append(classification_report(y_test, y_test_pred, output_dict=True))
+
+# ===============================
+# 6️⃣ 平均混淆矩陣（Train / Test）
+# ===============================
+cm_train_mean = np.mean(np.array(cm_train_list), axis=0)
+cm_test_mean  = np.mean(np.array(cm_test_list), axis=0)
+
+plt.figure(figsize=(10,4))
+
+plt.subplot(1,2,1)
+sns.heatmap(cm_train_mean, annot=True, fmt=".1f", cmap="Oranges")
+plt.title("Mean Train Confusion Matrix (5-Fold)")
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+
+plt.subplot(1,2,2)
+sns.heatmap(cm_test_mean, annot=True, fmt=".1f", cmap="Blues")
+plt.title("Mean Test Confusion Matrix (5-Fold)")
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+
+plt.tight_layout()
+plt.show()
+
+# ===============================
+# 7️⃣ Mean ROC（Train + Test 同一張，含 AUC 平均±標準差）
+# ===============================
+mean_fpr = np.linspace(0, 1, 200)
+
+tpr_tr_interp = np.array([np.interp(mean_fpr, fpr, tpr) for fpr, tpr in roc_train_list])
+tpr_te_interp = np.array([np.interp(mean_fpr, fpr, tpr) for fpr, tpr in roc_test_list])
+
+mean_tpr_tr = tpr_tr_interp.mean(axis=0)
+std_tpr_tr  = tpr_tr_interp.std(axis=0)
+
+mean_tpr_te = tpr_te_interp.mean(axis=0)
+std_tpr_te  = tpr_te_interp.std(axis=0)
+
+mean_auc_tr = np.mean(auc_train_list)
+std_auc_tr  = np.std(auc_train_list)
+
+mean_auc_te = np.mean(auc_test_list)
+std_auc_te  = np.std(auc_test_list)
+
+plt.figure(figsize=(8,6))
+plt.plot(mean_fpr, mean_tpr_tr, label=f"Mean Train ROC (AUC={mean_auc_tr:.3f} ± {std_auc_tr:.3f})")
+plt.fill_between(mean_fpr, mean_tpr_tr-std_tpr_tr, mean_tpr_tr+std_tpr_tr, alpha=0.2)
+
+plt.plot(mean_fpr, mean_tpr_te, label=f"Mean Test  ROC (AUC={mean_auc_te:.3f} ± {std_auc_te:.3f})")
+plt.fill_between(mean_fpr, mean_tpr_te-std_tpr_te, mean_tpr_te+std_tpr_te, alpha=0.2)
+
+plt.plot([0,1],[0,1],'--',color='gray')
+plt.xlabel("FPR")
+plt.ylabel("TPR")
+plt.title("Mean ROC over 5 Folds (Train vs Test)")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# ===============================
+# 8️⃣ 平均特徵重要性（五折平均 ± 標準差）＋ 圖
+# ===============================
+importance_arr = np.array(importance_list)
+feat_df = pd.DataFrame({
+    "feature": feature_cols,
+    "mean_importance": importance_arr.mean(axis=0),
+    "std_importance": importance_arr.std(axis=0)
+}).sort_values("mean_importance", ascending=True)
+
+plt.figure(figsize=(10,6))
+plt.barh(
+    y=feat_df["feature"],
+    width=feat_df["mean_importance"],
+    xerr=feat_df["std_importance"].to_numpy(),
+    capsize=5
+)
+plt.xlabel("Mean Feature Importance ± Std")
+plt.ylabel("Feature")
+plt.title("Feature Importance over 5 folds")
+plt.tight_layout()
+plt.show()
+
+# ===============================
+# 9️⃣ 五折分類報告（mean / std / mean±std）— 取 positive 類
+# ===============================
+def five_fold_classification_stats(reports):
+    metrics = ["precision", "recall", "f1-score"]
+    sample_keys = reports[0].keys()
+    class_keys = [k for k in sample_keys if k not in ["accuracy", "macro avg", "weighted avg"]]
+    positive_key = sorted(class_keys)[-1]  # 預設取較大的那類當 positive
+
+    mean_dict, std_dict, mean_std_dict = {}, {}, {}
+    for m in metrics:
+        values = np.array([r[positive_key][m] for r in reports])
+        mean_dict[m] = values.mean()
+        std_dict[m]  = values.std()
+        mean_std_dict[m] = f"{values.mean():.6f} ± {values.std():.6f}"
+
+    support = np.mean([r[positive_key]["support"] for r in reports])
+
+    mean_df = pd.DataFrame(mean_dict, index=["positive"])
+    std_df  = pd.DataFrame(std_dict,  index=["positive"])
+    mean_std_df = pd.DataFrame(mean_std_dict, index=["positive"])
+
+    mean_df["support"] = support
+    std_df["support"]  = support
+    mean_std_df["support"] = support
+    return mean_df, std_df, mean_std_df
+
+mean_report, std_report, mean_std_report = five_fold_classification_stats(report_list_test)
+
+# ===============================
+# 🔟 平均分類報告（Train / Test）
+# ===============================
+def average_classification_report(reports):
+    keys = list(reports[0].keys())
+    avg_report = {}
+    for k in keys:
+        if k not in ["accuracy", "macro avg", "weighted avg"]:
+            avg_report[k] = {
+                "precision": np.mean([r[k]["precision"] for r in reports]),
+                "recall":    np.mean([r[k]["recall"] for r in reports]),
+                "f1-score":  np.mean([r[k]["f1-score"] for r in reports]),
+                "support":   np.mean([r[k]["support"] for r in reports]),
+            }
+    return avg_report
+
+avg_report_train = average_classification_report(report_list_train)
+avg_report_test  = average_classification_report(report_list_test)
+
+# ===============================
+# 1️⃣1️⃣ 訓練整個訓練集並畫決策樹
+# ===============================
+model.fit(X_train, y_train)
+plt.figure(figsize=(20,12))
+plot_tree(
+    model,
+    feature_names=feature_cols,
+    class_names=["False","True"],
+    filled=True,
+    rounded=True,
+    fontsize=10
+)
+plt.tight_layout()
+plt.show()
+
+# ===============================
+# 1️⃣2️⃣ SHAP 特徵重要性分析（bar + beeswarm）
+# ===============================
+import shap
+model.fit(X_train, y_train)
+
+sample_size = min(2000, len(X_test))
+X_shap = X_test.sample(n=sample_size, random_state=42)
+
+explainer = shap.Explainer(model, X_train)
+sv = explainer(X_shap)
+
+vals = sv.values
+shap_pos = vals[:, :, 1] if vals.ndim == 3 else vals
+
+mean_abs_shap = np.abs(shap_pos).mean(axis=0)
+shap_importance_df = pd.DataFrame({
+    "feature": X_shap.columns,
+    "mean_abs_shap": mean_abs_shap
+}).sort_values("mean_abs_shap", ascending=False)
+
+plt.figure(figsize=(10,6))
+shap.summary_plot(shap_pos, X_shap, plot_type="bar", show=False)
+plt.title("SHAP Feature Importance (bar)")
+plt.show()
+
+plt.figure(figsize=(10,6))
+shap.summary_plot(shap_pos, X_shap, show=False)
+plt.title("SHAP Summary (beeswarm)")
+plt.show()
+
+# ===============================
+# 1️⃣3️⃣ 文字輸出
+# ===============================
+acc_train_arr = np.array(acc_train_list)
+acc_test_arr  = np.array(acc_test_list)
+
+mean_train_acc = acc_train_arr.mean()
+std_train_acc  = acc_train_arr.std()
+
+mean_test_acc = acc_test_arr.mean()
+std_test_acc  = acc_test_arr.std()
+
+def _df_to_block(df, round_n=6):
+    """把 DataFrame 轉成像截圖那樣的純文字區塊"""
+    return df.round(round_n).to_string()
+
+print(f"Train Accuracy: Mean={mean_train_acc:.4f}, Std={std_train_acc:.4f}")
+print(f"Test  Accuracy: Mean={mean_test_acc:.4f}, Std={std_test_acc:.4f}\n")
+
+print("===== Average Classification Report - Train =====")
+print(_df_to_block(pd.DataFrame(avg_report_train).T))
+print()
+
+print("===== Average Classification Report - Test =====")
+print(_df_to_block(pd.DataFrame(avg_report_test).T))
+print()
+
+print("===== 五折交叉驗證準確率 =====")
+for i, acc in enumerate(acc_test_arr, 1):
+    print(f"Fold {i}: {acc:.6f}")
+print()
+
+print("===== 平均準確率 =====")
+print(f"Mean Accuracy: {mean_test_acc:.6f}")
+print(f"Std  Accuracy : {std_test_acc:.6f}")
+print()
+
+print("===== 五折偏差（每折 - 平均） =====")
+for i, acc in enumerate(acc_test_arr, 1):
+    print(f"Fold {i}: {acc - mean_test_acc:+.6f}")
+print()
+
+print("===== 五折交叉驗證「平均分類報告」 =====")
+print(_df_to_block(mean_report))
+print()
+
+print("===== 五折交叉驗證「標準差分類報告」 =====")
+print(_df_to_block(std_report))
+print()
+
+print("===== 五折交叉驗證「平均 ± 標準差 分類報告」 =====")
+print(_df_to_block(mean_std_report))
+print()
+
+print("===== Mean Feature Importance =====")
+print(_df_to_block(feat_df, round_n=6))
+print()
+
+print("===== SHAP Feature Importance (mean |SHAP|) =====")
+print(_df_to_block(shap_importance_df, round_n=6))
